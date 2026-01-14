@@ -6,17 +6,14 @@ const { getConnection, initializeDatabase, sql } = require("./db");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
+// CORS Middleware (allow all)
 app.use(
   cors({
-    origin: "*", // allow all origins
+    origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-
-// Handle preflight requests
-app.options("*", cors());
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -27,12 +24,11 @@ initializeDatabase().catch((err) => {
   process.exit(1);
 });
 
-// POST endpoint to submit data
+// POST endpoint
 app.post("/api/submit", async (req, res) => {
   try {
     const { name, email, phone, message } = req.body;
 
-    // Validation
     if (!name || !email || !phone || !message) {
       return res.status(400).json({ error: "All fields are required" });
     }
@@ -50,11 +46,9 @@ app.post("/api/submit", async (req, res) => {
         SELECT SCOPE_IDENTITY() AS id;
       `);
 
-    const insertedId = result.recordset[0].id;
-
     res.status(201).json({
       message: "Data submitted successfully",
-      id: insertedId,
+      id: result.recordset[0].id,
     });
   } catch (error) {
     console.error("Error submitting data:", error);
@@ -62,11 +56,10 @@ app.post("/api/submit", async (req, res) => {
   }
 });
 
-// GET endpoint to retrieve all data
+// GET endpoint
 app.get("/api/data", async (req, res) => {
   try {
     const pool = await getConnection();
-
     const result = await pool
       .request()
       .query("SELECT * FROM submissions ORDER BY created_at DESC");
@@ -78,19 +71,18 @@ app.get("/api/data", async (req, res) => {
   }
 });
 
-// Health check endpoint
+// Health check
 app.get("/api/health", (req, res) => {
   res.json({ status: "Server is running" });
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
 
 // Graceful shutdown
 process.on("SIGINT", async () => {
-  console.log("Shutting down gracefully...");
   const { closeConnection } = require("./db");
   await closeConnection();
   process.exit(0);
