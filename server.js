@@ -6,17 +6,24 @@ const fs = require("fs");
 const { getConnection, initializeDatabase, sql } = require("./db");
 const { generateCertificate } = require("./certificateGenerator");
 const { sendCertificateEmail, sendTestEmail } = require("./emailService");
+const {
+  initializeBlobStorage,
+  uploadToBlob,
+  getBlobUrl,
+  blobExists,
+} = require("./azureBlobService");
+const { sendCertificateSMS, sendTestSMS } = require("./smsService");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Create certificates directory if it doesn't exist
+// Create certificates directory if it doesn't exist (for temporary storage)
 const certificatesDir = path.join(__dirname, "certificates");
 if (!fs.existsSync(certificatesDir)) {
   fs.mkdirSync(certificatesDir);
 }
 
-// CORS Middleware (allow all)
+// CORS Middleware
 app.use(
   cors({
     origin: "*",
@@ -28,14 +35,18 @@ app.use(
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Serve static certificates directory
+// Serve static certificates directory (fallback for local files)
 app.use("/certificates", express.static(certificatesDir));
 
-// Initialize database on server start
-initializeDatabase().catch((err) => {
-  console.error("Failed to initialize database:", err);
-  process.exit(1);
-});
+// Initialize database and Azure Blob Storage on server start
+Promise.all([initializeDatabase(), initializeBlobStorage()])
+  .then(() => {
+    console.log("✓ All services initialized successfully");
+  })
+  .catch((err) => {
+    console.error("Failed to initialize services:", err);
+    process.exit(1);
+  });
 
 app.post("/api/submit", async (req, res) => {
   try {
@@ -89,41 +100,81 @@ app.post("/api/submit", async (req, res) => {
 
     const newId = result.recordset[0].id;
 
-    // 🔹 AUTO GENERATE & SEND CERTIFICATE
-    let certificateFileName = null;
+    // Generate and upload certificate to Azure Blob Storage
+    const certificateFileName = `certificate_${newId}_${Date.now()}.pdf`;
+    const tempCertificatePath = path.join(certificatesDir, certificateFileName);
 
-    if (email) {
-      certificateFileName = `certificate_${newId}_${Date.now()}.pdf`;
-      const certificatePath = path.join(certificatesDir, certificateFileName);
+    // Generate certificate
+    await generateCertificate(
+      { id: newId, name, email, phone, message },
+      tempCertificatePath
+    );
 
-      await generateCertificate(
-        { id: newId, name, email, phone, message },
-        certificatePath
+    // Upload to Azure Blob Storage
+    const certificateBuffer = fs.readFileSync(tempCertificatePath);
+    const blobUrl = await uploadToBlob(
+      certificateFileName,
+      certificateBuffer,
+      "application/pdf"
+    );
+
+    // Update database with blob URL
+    await pool
+      .request()
+      .input("id", sql.Int, newId)
+      .input("certificate_url", sql.NVarChar, blobUrl)
+      .input("certificate_path", sql.NVarChar, certificateFileName)
+      .query(
+        "UPDATE submissions SET certificate_path = @certificate_path, certificate_url = @certificate_url WHERE id = @id"
       );
 
+    // Send certificate via email or SMS (prefer email if present)
+    if (email && email.trim() !== "") {
+      // Email is present - send via email with attachment
+      await sendCertificateEmail({ name, email }, tempCertificatePath);
       await pool
         .request()
         .input("id", sql.Int, newId)
-        .input("certificate_path", sql.NVarChar, certificateFileName)
+        .input("send_method", sql.NVarChar, "email")
         .query(
-          "UPDATE submissions SET certificate_path = @certificate_path WHERE id = @id"
+          "UPDATE submissions SET certificate_sent = 1, certificate_sent_at = GETDATE(), send_method = @send_method WHERE id = @id"
         );
-
-      await sendCertificateEmail({ name, email }, certificatePath);
-
+      console.log(`✓ Certificate sent via EMAIL to ${email}`);
+    } else if (phone && phone.trim() !== "") {
+      // No email but phone is present - send via SMS with link
+      await sendCertificateSMS({ id: newId, name, phone }, blobUrl);
       await pool
         .request()
         .input("id", sql.Int, newId)
+        .input("send_method", sql.NVarChar, "sms")
         .query(
-          "UPDATE submissions SET certificate_sent = 1, certificate_sent_at = GETDATE() WHERE id = @id"
+          "UPDATE submissions SET certificate_sent = 1, certificate_sent_at = GETDATE(), send_method = @send_method WHERE id = @id"
         );
+      console.log(`✓ Certificate sent via SMS to ${phone}`);
+    }
+
+    // Clean up temporary file
+    fs.unlinkSync(tempCertificatePath);
+
+    // Determine response message based on what was sent
+    let responseMessage = "Registration successful!";
+    let sendMethod = "none";
+
+    if (email && email.trim() !== "") {
+      responseMessage =
+        "Registration successful! Certificate has been sent to your email. 📧";
+      sendMethod = "email";
+    } else if (phone && phone.trim() !== "") {
+      responseMessage =
+        "Registration successful! Certificate link has been sent to your phone via SMS. 📱";
+      sendMethod = "sms";
     }
 
     res.status(201).json({
-      message: email
-        ? "Registration successful! Certificate has been sent to your email."
-        : "Registration successful! Certificate can be collected later.",
+      message: responseMessage,
       id: newId,
+      certificateUrl: blobUrl,
+      sendMethod: sendMethod,
     });
   } catch (error) {
     console.error("Error submitting data:", error);
@@ -146,12 +197,11 @@ app.get("/api/data", async (req, res) => {
   }
 });
 
-// POST endpoint - Generate certificate
+// POST endpoint - Generate certificate and upload to Azure
 app.post("/api/generate-certificate/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Fetch participant data
     const pool = await getConnection();
     const result = await pool
       .request()
@@ -164,23 +214,35 @@ app.post("/api/generate-certificate/:id", async (req, res) => {
 
     const participant = result.recordset[0];
     const certificateFileName = `certificate_${id}_${Date.now()}.pdf`;
-    const certificatePath = path.join(certificatesDir, certificateFileName);
+    const tempCertificatePath = path.join(certificatesDir, certificateFileName);
 
     // Generate certificate
-    await generateCertificate(participant, certificatePath);
+    await generateCertificate(participant, tempCertificatePath);
 
-    // Update database with certificate path
+    // Upload to Azure Blob Storage
+    const certificateBuffer = fs.readFileSync(tempCertificatePath);
+    const blobUrl = await uploadToBlob(
+      certificateFileName,
+      certificateBuffer,
+      "application/pdf"
+    );
+
+    // Update database
     await pool
       .request()
       .input("id", sql.Int, id)
       .input("certificate_path", sql.NVarChar, certificateFileName)
+      .input("certificate_url", sql.NVarChar, blobUrl)
       .query(
-        "UPDATE submissions SET certificate_path = @certificate_path WHERE id = @id"
+        "UPDATE submissions SET certificate_path = @certificate_path, certificate_url = @certificate_url WHERE id = @id"
       );
+
+    // Clean up temporary file
+    fs.unlinkSync(tempCertificatePath);
 
     res.json({
       message: "Certificate generated successfully",
-      certificateUrl: `/certificates/${certificateFileName}`,
+      certificateUrl: blobUrl,
       certificatePath: certificateFileName,
     });
   } catch (error) {
@@ -194,7 +256,6 @@ app.post("/api/send-certificate/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Fetch participant data
     const pool = await getConnection();
     const result = await pool
       .request()
@@ -207,62 +268,62 @@ app.post("/api/send-certificate/:id", async (req, res) => {
 
     const participant = result.recordset[0];
 
-    // Check if email exists
     if (!participant.email || participant.email.trim() === "") {
       return res
         .status(400)
         .json({ error: "No email address found for this participant" });
     }
 
-    // Check if certificate exists, if not generate it
-    let certificatePath;
-    if (participant.certificate_path) {
-      certificatePath = path.join(
-        certificatesDir,
-        participant.certificate_path
-      );
+    // Check if certificate URL exists in Azure
+    let certificateUrl = participant.certificate_url;
 
-      // If file doesn't exist, regenerate
-      if (!fs.existsSync(certificatePath)) {
-        const certificateFileName = `certificate_${id}_${Date.now()}.pdf`;
-        certificatePath = path.join(certificatesDir, certificateFileName);
-        await generateCertificate(participant, certificatePath);
-
-        // Update database
-        await pool
-          .request()
-          .input("id", sql.Int, id)
-          .input("certificate_path", sql.NVarChar, certificateFileName)
-          .query(
-            "UPDATE submissions SET certificate_path = @certificate_path WHERE id = @id"
-          );
-      }
-    } else {
+    if (!certificateUrl || !(await blobExists(participant.certificate_path))) {
       // Generate new certificate
       const certificateFileName = `certificate_${id}_${Date.now()}.pdf`;
-      certificatePath = path.join(certificatesDir, certificateFileName);
-      await generateCertificate(participant, certificatePath);
+      const tempCertificatePath = path.join(
+        certificatesDir,
+        certificateFileName
+      );
 
-      // Update database
+      await generateCertificate(participant, tempCertificatePath);
+
+      const certificateBuffer = fs.readFileSync(tempCertificatePath);
+      certificateUrl = await uploadToBlob(
+        certificateFileName,
+        certificateBuffer,
+        "application/pdf"
+      );
+
       await pool
         .request()
         .input("id", sql.Int, id)
         .input("certificate_path", sql.NVarChar, certificateFileName)
+        .input("certificate_url", sql.NVarChar, certificateUrl)
         .query(
-          "UPDATE submissions SET certificate_path = @certificate_path WHERE id = @id"
+          "UPDATE submissions SET certificate_path = @certificate_path, certificate_url = @certificate_url WHERE id = @id"
         );
+
+      fs.unlinkSync(tempCertificatePath);
     }
 
-    // Send email
-    await sendCertificateEmail(participant, certificatePath);
+    // Download certificate from Azure for email attachment
+    const tempPath = path.join(certificatesDir, participant.certificate_path);
+    const axios = require("axios");
+    const response = await axios.get(certificateUrl, {
+      responseType: "arraybuffer",
+    });
+    fs.writeFileSync(tempPath, response.data);
 
-    // Update email sent status
+    await sendCertificateEmail(participant, tempPath);
+
     await pool
       .request()
       .input("id", sql.Int, id)
       .query(
         "UPDATE submissions SET certificate_sent = 1, certificate_sent_at = GETDATE() WHERE id = @id"
       );
+
+    fs.unlinkSync(tempPath);
 
     res.json({
       message: "Certificate sent successfully to " + participant.email,
@@ -276,12 +337,11 @@ app.post("/api/send-certificate/:id", async (req, res) => {
   }
 });
 
-// GET endpoint - Download certificate
-app.get("/api/download-certificate/:id", async (req, res) => {
+// POST endpoint - Send certificate via SMS
+app.post("/api/send-sms/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Fetch participant data
     const pool = await getConnection();
     const result = await pool
       .request()
@@ -294,56 +354,144 @@ app.get("/api/download-certificate/:id", async (req, res) => {
 
     const participant = result.recordset[0];
 
-    // Check if certificate exists, if not generate it
-    let certificatePath;
-    if (participant.certificate_path) {
-      certificatePath = path.join(
-        certificatesDir,
-        participant.certificate_path
-      );
+    if (!participant.phone || participant.phone.trim() === "") {
+      return res
+        .status(400)
+        .json({ error: "No phone number found for this participant" });
+    }
 
-      // If file doesn't exist, regenerate
-      if (!fs.existsSync(certificatePath)) {
-        const certificateFileName = `certificate_${id}_${Date.now()}.pdf`;
-        certificatePath = path.join(certificatesDir, certificateFileName);
-        await generateCertificate(participant, certificatePath);
+    // Check if certificate URL exists
+    let certificateUrl = participant.certificate_url;
 
-        // Update database
-        await pool
-          .request()
-          .input("id", sql.Int, id)
-          .input("certificate_path", sql.NVarChar, certificateFileName)
-          .query(
-            "UPDATE submissions SET certificate_path = @certificate_path WHERE id = @id"
-          );
-      }
-    } else {
+    if (!certificateUrl || !(await blobExists(participant.certificate_path))) {
       // Generate new certificate
       const certificateFileName = `certificate_${id}_${Date.now()}.pdf`;
-      certificatePath = path.join(certificatesDir, certificateFileName);
-      await generateCertificate(participant, certificatePath);
+      const tempCertificatePath = path.join(
+        certificatesDir,
+        certificateFileName
+      );
 
-      // Update database
+      await generateCertificate(participant, tempCertificatePath);
+
+      const certificateBuffer = fs.readFileSync(tempCertificatePath);
+      certificateUrl = await uploadToBlob(
+        certificateFileName,
+        certificateBuffer,
+        "application/pdf"
+      );
+
       await pool
         .request()
         .input("id", sql.Int, id)
         .input("certificate_path", sql.NVarChar, certificateFileName)
+        .input("certificate_url", sql.NVarChar, certificateUrl)
         .query(
-          "UPDATE submissions SET certificate_path = @certificate_path WHERE id = @id"
+          "UPDATE submissions SET certificate_path = @certificate_path, certificate_url = @certificate_url WHERE id = @id"
         );
+
+      fs.unlinkSync(tempCertificatePath);
     }
 
-    // Send file for download
-    res.download(
-      certificatePath,
-      `YogiVemanaJayanti_Certificate_${participant.name.replace(
+    // Send SMS
+    await sendCertificateSMS(participant, certificateUrl);
+
+    await pool
+      .request()
+      .input("id", sql.Int, id)
+      .query(
+        "UPDATE submissions SET certificate_sent = 1, certificate_sent_at = GETDATE() WHERE id = @id"
+      );
+
+    res.json({
+      message:
+        "Certificate link sent successfully via SMS to " + participant.phone,
+    });
+  } catch (error) {
+    console.error("Error sending SMS:", error);
+    res.status(500).json({
+      error: "Failed to send SMS",
+      details: error.message,
+    });
+  }
+});
+
+// GET endpoint - Download certificate from Azure
+app.get("/api/download-certificate/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const pool = await getConnection();
+    const result = await pool
+      .request()
+      .input("id", sql.Int, id)
+      .query("SELECT * FROM submissions WHERE id = @id");
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: "Participant not found" });
+    }
+
+    const participant = result.recordset[0];
+
+    let certificateUrl = participant.certificate_url;
+
+    if (!certificateUrl || !(await blobExists(participant.certificate_path))) {
+      const certificateFileName = `certificate_${id}_${Date.now()}.pdf`;
+      const tempCertificatePath = path.join(
+        certificatesDir,
+        certificateFileName
+      );
+
+      await generateCertificate(participant, tempCertificatePath);
+
+      const certificateBuffer = fs.readFileSync(tempCertificatePath);
+      certificateUrl = await uploadToBlob(
+        certificateFileName,
+        certificateBuffer,
+        "application/pdf"
+      );
+
+      await pool
+        .request()
+        .input("id", sql.Int, id)
+        .input("certificate_path", sql.NVarChar, certificateFileName)
+        .input("certificate_url", sql.NVarChar, certificateUrl)
+        .query(
+          "UPDATE submissions SET certificate_path = @certificate_path, certificate_url = @certificate_url WHERE id = @id"
+        );
+
+      fs.unlinkSync(tempCertificatePath);
+    }
+
+    // Download from Azure and send to client
+    const axios = require("axios");
+    const response = await axios.get(certificateUrl, {
+      responseType: "arraybuffer",
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="YogiVemanaJayanti_Certificate_${participant.name.replace(
         /\s+/g,
         "_"
-      )}.pdf`
+      )}.pdf"`
     );
+    res.send(Buffer.from(response.data));
   } catch (error) {
     console.error("Error downloading certificate:", error);
     res.status(500).json({ error: "Failed to download certificate" });
+  }
+});
+
+// Test SMS endpoint
+app.post("/api/test-sms", async (req, res) => {
+  try {
+    const { phoneNumber } = req.body;
+    await sendTestSMS(phoneNumber);
+    res.json({ message: "Test SMS sent successfully" });
+  } catch (error) {
+    console.error("Error sending test SMS:", error);
+    res.status(500).json({ error: "Failed to send test SMS" });
   }
 });
 

@@ -12,6 +12,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@azure/storage-blob": "^12.30.0",
     "body-parser": "^2.2.2",
     "canvas": "^3.2.1",
     "cors": "^2.8.5",
@@ -22,6 +23,7 @@
     "nodemailer": "^7.0.12",
     "pdfkit": "^0.17.2",
     "qrcode": "^1.5.4",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "twilio": "^5.11.2"
   }
 }
