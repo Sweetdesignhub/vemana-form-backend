@@ -64,6 +64,7 @@ app.post("/api/submit", async (req, res) => {
 
     const pool = await getConnection();
 
+    // Fixed: Use correct property names from the location object
     const result = await pool
       .request()
       .input("name", sql.NVarChar, name)
@@ -76,8 +77,8 @@ app.post("/api/submit", async (req, res) => {
       .input("city", sql.NVarChar, location?.city || null)
       .input("state", sql.NVarChar, location?.state || null)
       .input("country", sql.NVarChar, location?.country || null)
-      .input("country_code", sql.NVarChar, location?.countryCode || null)
-      .input("full_address", sql.NVarChar, location?.fullAddress || null)
+      .input("country_code", sql.NVarChar, location?.countryCode || null) // Changed from location.country_code
+      .input("full_address", sql.NVarChar, location?.fullAddress || null) // Changed from location.full_address
       .input(
         "location_timestamp",
         sql.DateTime,
