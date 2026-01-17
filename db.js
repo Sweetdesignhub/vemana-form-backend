@@ -44,72 +44,51 @@ async function initializeDatabase() {
 
     const createTableQuery = `
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='submissions' AND xtype='U')
-      CREATE TABLE submissions (
-        id INT IDENTITY(1,1) PRIMARY KEY,
-        name NVARCHAR(255) NOT NULL,
-        email NVARCHAR(255) NOT NULL,
-        phone NVARCHAR(50) NOT NULL,
-        message NVARCHAR(MAX) NOT NULL,
-        latitude FLOAT,
-        longitude FLOAT,
-        location_accuracy FLOAT,
-        city NVARCHAR(100),
-        state NVARCHAR(100),
-        country NVARCHAR(100),
-        country_code NVARCHAR(10),
-        full_address NVARCHAR(MAX),
-        location_timestamp DATETIME,
-        certificate_path NVARCHAR(500),
-        certificate_sent BIT DEFAULT 0,
-        certificate_sent_at DATETIME,
-        created_at DATETIME DEFAULT GETDATE()
-      )
+      BEGIN
+        CREATE TABLE submissions (
+          id INT IDENTITY(1,1) PRIMARY KEY,
+          name NVARCHAR(255) NOT NULL,
+          email NVARCHAR(255) NULL,
+          phone NVARCHAR(50) NULL,
+          message NVARCHAR(MAX) NULL,
+
+          latitude FLOAT NULL,
+          longitude FLOAT NULL,
+          location_accuracy FLOAT NULL,
+          city NVARCHAR(100) NULL,
+          state NVARCHAR(100) NULL,
+          country NVARCHAR(100) NULL,
+          country_code NVARCHAR(10) NULL,
+          full_address NVARCHAR(MAX) NULL,
+          location_timestamp DATETIME NULL,
+
+          certificate_path NVARCHAR(500) NULL,
+          certificate_url NVARCHAR(1000) NULL,
+          certificate_sent BIT DEFAULT 0,
+          certificate_sent_at DATETIME NULL,
+
+          send_method NVARCHAR(20) NULL,
+          created_at DATETIME DEFAULT GETDATE()
+        );
+
+        CREATE INDEX idx_submissions_created_at ON submissions(created_at DESC);
+      END
     `;
 
     await pool.request().query(createTableQuery);
-    console.log("Database table initialized successfully");
+    console.log("✓ Database table initialized");
 
-    // Add new columns if they don't exist (for existing databases)
+    // Add missing columns safely for existing DB
     const alterTableQuery = `
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'certificate_path')
-      ALTER TABLE submissions ADD certificate_path NVARCHAR(500);
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='submissions' AND COLUMN_NAME='certificate_url')
+        ALTER TABLE submissions ADD certificate_url NVARCHAR(1000);
 
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'certificate_sent')
-      ALTER TABLE submissions ADD certificate_sent BIT DEFAULT 0;
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'certificate_sent_at')
-      ALTER TABLE submissions ADD certificate_sent_at DATETIME;
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'latitude')
-      ALTER TABLE submissions ADD latitude FLOAT;
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'longitude')
-      ALTER TABLE submissions ADD longitude FLOAT;
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'location_accuracy')
-      ALTER TABLE submissions ADD location_accuracy FLOAT;
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'city')
-      ALTER TABLE submissions ADD city NVARCHAR(100);
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'state')
-      ALTER TABLE submissions ADD state NVARCHAR(100);
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'country')
-      ALTER TABLE submissions ADD country NVARCHAR(100);
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'country_code')
-      ALTER TABLE submissions ADD country_code NVARCHAR(10);
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'full_address')
-      ALTER TABLE submissions ADD full_address NVARCHAR(MAX);
-
-      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'submissions' AND COLUMN_NAME = 'location_timestamp')
-      ALTER TABLE submissions ADD location_timestamp DATETIME;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='submissions' AND COLUMN_NAME='send_method')
+        ALTER TABLE submissions ADD send_method NVARCHAR(20);
     `;
 
     await pool.request().query(alterTableQuery);
-    console.log("Database schema updated successfully");
+    console.log("✓ Database schema verified");
   } catch (err) {
     console.error("Database initialization error:", err);
     throw err;
