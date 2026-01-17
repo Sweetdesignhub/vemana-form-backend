@@ -88,7 +88,14 @@ async function drawBackgroundCover(doc, imagePath, pageWidth, pageHeight) {
 /**
  * Draw logo with fixed height, centered horizontally
  */
-async function drawLogoFixedHeight(doc, imagePath, xCenter, topY, fixedHeight) {
+async function drawLogoFixedHeight(
+  doc,
+  imagePath,
+  xCenter,
+  topY,
+  fixedHeight,
+  marginLeft = 0
+) {
   if (!fs.existsSync(imagePath)) {
     console.warn(`✗ Logo not found at: ${imagePath}`);
     return;
@@ -107,7 +114,7 @@ async function drawLogoFixedHeight(doc, imagePath, xCenter, topY, fixedHeight) {
     const scale = fixedHeight / imgHeight;
     const drawWidth = imgWidth * scale;
 
-    const xPos = xCenter - drawWidth / 2;
+    const xPos = xCenter - drawWidth / 2 + marginLeft;
 
     // Draw optimized logo
     doc.image(optimizedPath, xPos, topY, {
@@ -207,7 +214,7 @@ async function generateCertificate(participant, outputPath) {
   console.log("Logo left path:", logoLeftPath);
   console.log("Logo right path:", logoRightPath);
 
-  await drawLogoFixedHeight(doc, logoLeftPath, 120, topY, logoHeight);
+  await drawLogoFixedHeight(doc, logoLeftPath, 120, topY, logoHeight, 30);
   await drawLogoFixedHeight(doc, logoRightPath, width - 75, topY, logoHeight);
 
   // ======================
