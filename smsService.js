@@ -43,7 +43,7 @@ async function sendCertificateSMS(participant, certificateUrl) {
 
     const message = `Namaste ${participant.name}! 🙏
 
-Your Certificate of Participation for *Vemana Vignana Yatra* is now ready.
+Your Certificate of Participation for Vemana Vignana Yatra is now ready.
 
 View & download your certificate:
 ${certificateUrl}
