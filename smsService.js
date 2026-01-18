@@ -43,15 +43,16 @@ async function sendCertificateSMS(participant, certificateUrl) {
 
     const message = `Namaste ${participant.name}! 🙏
 
-Your Vemana Vignana Yatra Certificate is ready!
+Your Certificate of Participation for *Vemana Vignana Yatra* is now ready.
 
-View & Download: ${certificateUrl}
+View & download your certificate:
+${certificateUrl}
 
-Certificate ID: YV-${participant.id}-2026
+Certificate ID: VVY-${participant.id}-2026
 
-May knowledge illuminate your path!
+May the wisdom of Yogi Vemana inspire lifelong learning.
 
-- Kadiri Tourism`;
+– Vemana Vignana Yatra Team`;
 
     const messageResponse = await client.messages.create({
       body: message,

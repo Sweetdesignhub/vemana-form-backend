@@ -132,7 +132,14 @@ app.post("/api/submit", async (req, res) => {
     // Send certificate via email or SMS (prefer email if present)
     if (email && email.trim() !== "") {
       // Email is present - send via email with attachment
-      await sendCertificateEmail({ name, email }, tempCertificatePath);
+      await sendCertificateEmail(
+        {
+          id: newId,
+          name,
+          email,
+        },
+        tempCertificatePath
+      );
       await pool
         .request()
         .input("id", sql.Int, newId)

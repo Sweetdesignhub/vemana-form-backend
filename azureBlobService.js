@@ -45,9 +45,13 @@ async function initializeBlobStorage() {
   }
 }
 
-function generateBlobSASUrl(blobName, expiresInHours = 1) {
+function generateBlobSASUrl(blobName, expiresInYears = 1) {
   if (!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) {
     throw new Error("Azure Storage account name or key not configured");
+  }
+
+  if (!containerClient) {
+    throw new Error("Blob container not initialized");
   }
 
   const sharedKeyCredential = new StorageSharedKeyCredential(
@@ -57,12 +61,22 @@ function generateBlobSASUrl(blobName, expiresInHours = 1) {
 
   const blobClient = containerClient.getBlockBlobClient(blobName);
 
+  const now = new Date();
+
+  // ⏪ Start time: 5 minutes in the past (IMPORTANT)
+  const startsOn = new Date(now.getTime() - 5 * 60 * 1000);
+
+  // ⏩ Expiry time: +1 year
+  const expiresOn = new Date(now);
+  expiresOn.setFullYear(expiresOn.getFullYear() + expiresInYears);
+
   const sasToken = generateBlobSASQueryParameters(
     {
       containerName: CONTAINER_NAME,
-      blobName: blobName,
+      blobName,
       permissions: BlobSASPermissions.parse("r"), // read-only
-      expiresOn: new Date(new Date().valueOf() + expiresInHours * 3600 * 1000),
+      startsOn,
+      expiresOn,
     },
     sharedKeyCredential
   ).toString();
@@ -94,7 +108,7 @@ async function uploadToBlob(
       blobHTTPHeaders: { blobContentType: contentType },
     });
 
-    // Generate secure SAS URL (valid for 1 hour by default)
+    // Generate SAS URL valid for 1 year
     const secureUrl = generateBlobSASUrl(blobName, 1);
 
     console.log(`✓ File uploaded successfully: ${blobName}`);
